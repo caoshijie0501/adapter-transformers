@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -21,7 +21,6 @@ from ..trainer_pt_utils import get_parameter_names
 from ..trainer_utils import EvalPrediction, ShardedDDPOption
 from ..training_args import TrainingArguments
 from ..utils import CONFIG_NAME, WEIGHTS_NAME, is_sagemaker_mp_enabled, logging
-
 
 if is_fairscale_available():
     dep_version_check("fairscale")
@@ -217,6 +216,73 @@ class AdapterTrainer(Trainer):
                 ):
                     self.model.load_head(os.path.join(resume_from_checkpoint, file_name))
 
+    #added for frob norm regularizer
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
+        """
+        Perform a training step on a batch of inputs.
+        Subclass and override to inject custom behavior.
+        Args:
+            model (`nn.Module`):
+                The model to train.
+            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
+                The inputs and targets of the model.
+                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
+                argument `labels`. Check your model's documentation for all accepted arguments.
+        Return:
+            `torch.Tensor`: The tensor with training loss on this batch.
+        """
+        model.train()
+        inputs = self._prepare_inputs(inputs)
+
+        if is_sagemaker_mp_enabled():
+            loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
+            return loss_mb.reduce_mean().detach().to(self.args.device)
+
+        with self.autocast_smart_context_manager():
+            loss = self.compute_loss(model, inputs)
+
+        # here to add frob norm
+        if self.args.frob_norm:
+            frob_loss = 0.0
+            for each_layer in model.bert.encoder.layer:
+                for name, param in each_layer.named_parameters():
+                    if 'adapter_down' in name and 'weight' in name:
+                        matrix_u = param
+                    if 'adapter_up' in name and 'weight' in name:
+                        matrix_v = param
+                #svd_matrix = torch.matmul(matrix_v,matrix_u)
+                #print(matrix_u.shape)
+                #print(matrix_v.shape)
+                #print(torch.linalg.svdvals(svd_matrix)[:20])
+                d = min(matrix_u.shape) #or size()
+                # verify the order of matrix and matrix_t, or the shape of output 
+                matrix_left = torch.matmul(matrix_u,matrix_u.t())-torch.eye(d).cuda()
+                matrix_right = torch.matmul(matrix_v.t(),matrix_v)-torch.eye(d).cuda()
+                frob_loss += torch.linalg.matrix_norm(matrix_left)#/(d*d)
+                frob_loss += torch.linalg.matrix_norm(matrix_right)#/(d*d)
+            #print(frob_loss)
+            loss = loss + self.args.frob_norm_factor*frob_loss/(frob_loss/loss).detach()
+
+
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+        if self.args.gradient_accumulation_steps > 1 and not self.deepspeed:
+            # deepspeed handles loss scaling by gradient_accumulation_steps in its `backward`
+            loss = loss / self.args.gradient_accumulation_steps
+
+        if self.do_grad_scaling:
+            self.scaler.scale(loss).backward()
+        elif self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        elif self.deepspeed:
+            # loss gets scaled under gradient_accumulation_steps in deepspeed
+            loss = self.deepspeed.backward(loss)
+        else:
+            loss.backward()
+
+        return loss.detach()
 
 class AdapterTrainerCallback(TrainerCallback):
     def __init__(self, trainer):

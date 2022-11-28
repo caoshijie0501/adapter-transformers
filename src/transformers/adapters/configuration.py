@@ -597,6 +597,8 @@ ADAPTER_CONFIG_MAP = {
     "prefix_tuning_flat": PrefixTuningConfig(flat=True),
     "parallel": ParallelConfig(),
     "scaled_parallel": ParallelConfig(scaling="learned"),
+    "linear_parallel":ParallelConfig(non_linearity="linear"),
+    "scaled_linear_parallel":ParallelConfig(scaling="learned",non_linearity="linear"),
     "lora": LoRAConfig(),
     "ia3": IA3Config(),
     "mam": MAMConfig(),

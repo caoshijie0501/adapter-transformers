@@ -959,6 +959,14 @@ class TrainingArguments:
                 " for more options."
             )
         },
+    )    
+    # add arguments for frob_norm
+    frob_norm: bool = field(
+        default=False,
+        metadata={"help": "Whether to add frob norm to loss function"},
+    )
+    frob_norm_factor: float = field(
+        default=1.0, metadata={"help": "if add frob norm, the loss factor"}
     )
 
     def __post_init__(self):
