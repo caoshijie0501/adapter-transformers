@@ -61,7 +61,7 @@ def parse_init(init_file):
     Read an init_file and parse (per backend) the _import_structure objects defined and the TYPE_CHECKING objects
     defined
     """
-    with open(init_file, "r", encoding="utf-8", newline="\n") as f:
+    with open(init_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     line_index = 0
@@ -268,6 +268,7 @@ def get_transformers_submodules():
 IGNORE_SUBMODULES = [
     "convert_pytorch_checkpoint_to_tf2",
     "modeling_flax_pytorch_utils",
+    "models.esm.openfold_utils",
 ]
 
 
@@ -296,4 +297,5 @@ def check_submodules():
 
 if __name__ == "__main__":
     check_all_inits()
-    check_submodules()
+    # For AH: adapter submodules are not all registered in the main init of Transformers.
+    # check_submodules()
